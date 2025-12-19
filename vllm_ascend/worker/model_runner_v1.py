@@ -533,6 +533,7 @@ class NPUModelRunner(LoRAModelRunnerMixin, ECConnectorModelRunnerMixin):
                                                      dtype=torch.int64)
         self.num_draft_tokens = self._make_buffer(self.max_num_reqs,
                                                   dtype=torch.int32)
+        self.enable_metrics_capture: bool = False # whether to capture metrics for this batch
 
     def _may_pad_kv_consumer_num_seq(self):
         # For Full Graph + MTP in a PD (Prefill/Decode) disaggregation scenario,
@@ -657,6 +658,8 @@ class NPUModelRunner(LoRAModelRunnerMixin, ECConnectorModelRunnerMixin):
 
             backward_kwargs = {}
             backward_kwargs["mm_features"] = new_req_data.mm_features
+            # Enable metrics capture if any request in the batch requests it.
+            self.enable_metrics_capture = new_req_data.enable_metrics.get("encode", False) or self.enable_metrics_capture
 
             self.requests[req_id] = CachedRequestState(
                 req_id=req_id,
@@ -668,6 +671,7 @@ class NPUModelRunner(LoRAModelRunnerMixin, ECConnectorModelRunnerMixin):
                 num_computed_tokens=new_req_data.num_computed_tokens,
                 output_token_ids=[],
                 lora_request=new_req_data.lora_request,
+                enable_metrics=new_req_data.enable_metrics,
                 **backward_kwargs,
             )
 
@@ -1947,7 +1951,8 @@ class NPUModelRunner(LoRAModelRunnerMixin, ECConnectorModelRunnerMixin):
                         scheduler_output,
                         encoder_cache=self.encoder_cache,
                 ):
-                    self._execute_mm_encoder(scheduler_output)
+                    with ProfileExecuteDuration().capture_async_enable_metrics("enable metrics", self.enable_metrics_capture):
+                        self._execute_mm_encoder(scheduler_output)
                     return make_empty_encoder_model_runner_output(
                         scheduler_output)
             if not scheduler_output.total_num_scheduled_tokens:
@@ -2216,6 +2221,12 @@ class NPUModelRunner(LoRAModelRunnerMixin, ECConnectorModelRunnerMixin):
 
         extra_args = ({"kv_connector_output": kv_connector_output})
 
+        durations = ProfileExecuteDuration().pop_captured_sync()
+        if "enable metrics" in durations:
+            extra_args["capture_metrics_result"] = {
+                req_id: {"encode_time_ms": durations["enable metrics"]} for req_id in req_ids_output_copy
+            }
+        
         model_runner_output = ModelRunnerOutput(
             req_ids=req_ids_output_copy,
             req_id_to_index=req_id_to_index_output_copy,
@@ -2226,7 +2237,6 @@ class NPUModelRunner(LoRAModelRunnerMixin, ECConnectorModelRunnerMixin):
             **extra_args,
         )
 
-        durations = ProfileExecuteDuration().pop_captured_sync()
         if durations:
             dr_str = [
                 f"[{tag}]:{duration:.2f}ms"

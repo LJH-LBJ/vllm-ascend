@@ -65,6 +65,7 @@ class CachedRequestState:
     mm_hashes: Optional[list[PlaceholderRange]] = None
 
     lora_request: Optional[LoRARequest] = None
+    enable_metrics: Optional[dict[str, bool]] = None
 
     def __post_init__(self):
         self.num_prompt_tokens = len(self.prompt_token_ids)

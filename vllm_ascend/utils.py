@@ -522,21 +522,21 @@ class ProfileExecuteDuration:
             self._observations.clear()
 
     @contextmanager
-    def capture_async(self, duration_tag: str):
-        if not envs_ascend.VLLM_ASCEND_MODEL_EXECUTE_TIME_OBSERVE:
+    def capture_async(self, duration_tag: str, enable_metrics_capture: Optional[bool] = False):
+        if enable_metrics_capture or envs_ascend.VLLM_ASCEND_MODEL_EXECUTE_TIME_OBSERVE:
+            observe_start = Event(enable_timing=True)
+            observe_start.record()
+            try:
+                yield
+            finally:
+                observe_end = Event(enable_timing=True)
+                observe_end.record()
+                with self._lock:
+                    self._observations.append(
+                        (duration_tag, observe_start, observe_end))
+        else:
             yield
             return
-
-        observe_start = Event(enable_timing=True)
-        observe_start.record()
-        try:
-            yield
-        finally:
-            observe_end = Event(enable_timing=True)
-            observe_end.record()
-            with self._lock:
-                self._observations.append(
-                    (duration_tag, observe_start, observe_end))
 
     def pop_captured_sync(self) -> dict:
         """Pop and synchronize all events in the observation list"""
